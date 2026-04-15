@@ -2,13 +2,15 @@
 pragma solidity ^0.8.20;
 
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 /**
  * @title PriceOracle
  * @notice 从Chainlink获取ETH和ERC20代币价格的合约
  */
-contract PriceOracle is Ownable {
+contract PriceOracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     
     // 从代币地址到价格预言机地址的映射
     mapping(address => AggregatorV3Interface) public priceFeeds;
@@ -29,11 +31,16 @@ contract PriceOracle is Ownable {
     event PriceFeedRemoved(address indexed token);
     event EthUsdPriceFeedUpdated(address indexed priceFeed);
     
-    constructor(address _ethUsdPriceFeed) Ownable(msg.sender) {
+
+    function initialize(address _ethUsdPriceFeed) public initializer {
+        __Ownable_init(msg.sender);
+        
         require(_ethUsdPriceFeed != address(0), unicode"价格预言机：无效的ETH/USD价格预言机");
         ethUsdPriceFeed = AggregatorV3Interface(_ethUsdPriceFeed);
         emit EthUsdPriceFeedUpdated(_ethUsdPriceFeed);
     }
+
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
     
     /**
      * @notice 为代币添加价格预言机

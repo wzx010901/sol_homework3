@@ -6,19 +6,20 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "./PriceOracle.sol";
 import "hardhat/console.sol";
+
 
 /**
  * @title NFTAuction
  * @notice 去中心化NFT拍卖市场，集成Chainlink价格预言机
  * @dev 使用UUPS代理模式实现可升级性
  */
-contract NFTAuction is Initializable, ReentrancyGuard, Pausable, Ownable, UUPSUpgradeable {
+contract NFTAuction is Initializable, ReentrancyGuard, PausableUpgradeable, OwnableUpgradeable, UUPSUpgradeable {
     using SafeERC20 for IERC20;
     
     struct Auction {
@@ -119,6 +120,11 @@ contract NFTAuction is Initializable, ReentrancyGuard, Pausable, Ownable, UUPSUp
     event PriceOracleUpdated(address newOracle);
     event AuctionExtended(uint256 indexed auctionId, uint256 newEndTime);
     
+      /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+    }
+
+
     modifier auctionExists(uint256 auctionId) {
         require(auctions[auctionId].seller != address(0), unicode"拍卖：拍卖不存在");
         _;
@@ -137,19 +143,17 @@ contract NFTAuction is Initializable, ReentrancyGuard, Pausable, Ownable, UUPSUp
         _;
     }
     
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() Ownable(msg.sender) {
-    }
-    
     function initialize(
         address _priceOracle,
         address _feeRecipient,
         uint256 _platformFeePercent
     ) public initializer {
+        __Pausable_init();
+        __Ownable_init(_feeRecipient);
+        
         require(_priceOracle != address(0), unicode"拍卖：无效的价格预言机");
         require(_feeRecipient != address(0), unicode"拍卖：无效的费用接收者");
         require(_platformFeePercent <= MAX_PLATFORM_FEE, unicode"拍卖：费用过高");
-        _transferOwnership(_feeRecipient);
         priceOracle = PriceOracle(_priceOracle);
         feeRecipient = _feeRecipient;
         platformFeePercent = _platformFeePercent;
@@ -304,6 +308,7 @@ contract NFTAuction is Initializable, ReentrancyGuard, Pausable, Ownable, UUPSUp
         emit BidPlaced(auctionId, msg.sender, amount, token, bidUsdValue);
     }
     
+    //结束拍卖
     function endAuction(uint256 auctionId)
         external
         nonReentrant
@@ -336,6 +341,13 @@ contract NFTAuction is Initializable, ReentrancyGuard, Pausable, Ownable, UUPSUp
                     auction.highestBidAmount,
                     auction.highestBidToken
                 );
+            } else {
+                // 将最高出价者的资金添加到待返还列表
+                if (auction.highestBidToken == address(0)) {
+                    pendingReturns[auctionId][auction.highestBidder] += auction.highestBidAmount;
+                } else {
+                    pendingTokenReturns[auctionId][auction.highestBidToken][auction.highestBidder] += auction.highestBidAmount;
+                }
             }
         }
         
@@ -348,6 +360,10 @@ contract NFTAuction is Initializable, ReentrancyGuard, Pausable, Ownable, UUPSUp
         }
     }
     
+    /**- 当卖家调用该函数时，会检查最高出价是否达到保留价
+    - 如果未达到保留价，函数会直接结束，不会进行任何资金分配
+    - 最高出价者的资金会保留在 pendingReturns 或 pendingTokenReturns 中
+    **/
     function claimProceeds(uint256 auctionId)
         external
         nonReentrant
@@ -393,6 +409,10 @@ contract NFTAuction is Initializable, ReentrancyGuard, Pausable, Ownable, UUPSUp
         }
     }
     
+    /**- 当用户调用该函数时，会检查是否有待提现的资金
+    - 有资金时，函数会将资金转账给用户
+    - 无资金时，函数会直接返回
+    **/
     function withdraw(uint256 auctionId) external nonReentrant auctionExists(auctionId) {
         uint256 amount = pendingReturns[auctionId][msg.sender];
         require(amount > 0, unicode"提现：无资金");
@@ -405,6 +425,9 @@ contract NFTAuction is Initializable, ReentrancyGuard, Pausable, Ownable, UUPSUp
         emit WithdrawalMade(auctionId, msg.sender, amount);
     }
     
+    /**
+     * 
+     */
     function withdrawToken(uint256 auctionId, address token) 
         external 
         nonReentrant 
@@ -418,6 +441,26 @@ contract NFTAuction is Initializable, ReentrancyGuard, Pausable, Ownable, UUPSUp
         IERC20(token).safeTransfer(msg.sender, amount);
         
         emit TokenWithdrawalMade(auctionId, msg.sender, token, amount);
+        Auction storage auction = auctions[auctionId];
+        //判断当前是否最高出价
+        if (auction.highestBidder != address(0)) {
+            uint256 highestBidUsd = _getBidUsdValue(
+                auction.highestBidAmount,
+                auction.highestBidToken,
+                auction.highestBidDecimals
+            );
+            if (auction.highestBidder == msg.sender) {
+                if (highestBidUsd >= auction.reservePrice) {
+           
+            // 添加：当出价未达保留价时，将NFT返回给卖家
+                    IERC721(auction.nftContract).transferFrom(
+                        address(this),
+                        auction.seller,
+                        auction.tokenId
+                    );
+                }
+            }
+        }
     }
     
     function cancelAuction(uint256 auctionId) 
