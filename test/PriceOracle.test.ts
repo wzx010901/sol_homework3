@@ -20,9 +20,9 @@ describe("PriceOracle 合约", async function () {
       100000000n, // $1.00 (8 decimals)
     ]);
 
-    const priceOracle = await viem.deployContract("PriceOracle", [
-      ethPriceFeed.address,
-    ]);
+    const priceOracle = await viem.deployContract("PriceOracle");
+    
+    await priceOracle.write.initialize([ethPriceFeed.address]);
 
     return {
       viem,

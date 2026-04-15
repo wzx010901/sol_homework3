@@ -15,7 +15,9 @@ describe("NFTAuction 合约", async function () {
     const ethUsdPriceFeed = await viem.deployContract("MockV3Aggregator", [8, ETH_PRICE]);
     const tokenUsdPriceFeed = await viem.deployContract("MockV3Aggregator", [8, TOKEN_PRICE]);
 
-    const priceOracle = await viem.deployContract("PriceOracle", [ethUsdPriceFeed.address]);
+    const priceOracle = await viem.deployContract("PriceOracle");
+    
+    await priceOracle.write.initialize([ethUsdPriceFeed.address]);
 
     const bidToken = await viem.deployContract("MockERC20", [
       "Bid Token",
